@@ -1,0 +1,95 @@
+# Select › Options
+
+> **Category:** select
+> **Component Name:** `flux:select.options`
+
+## Overview
+
+Dropdown select component with search and filtering.
+
+## Props
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `searchable` | `mixed` | `null` | Whether the component is searchable |
+| `search` | `mixed` | `null` | Configuration for search |
+| `empty` | `mixed` | `null` | Configuration for empty |
+
+## Inherited Props (via @aware)
+
+These props are inherited from parent components:
+
+- `searchable`
+
+## Default Slot
+
+This component accepts a default slot for its main content.
+
+## Usage
+
+### Basic Example
+
+```blade
+<flux:select.options
+/>
+```
+
+### Advanced Example
+
+```blade
+<flux:select.options
+    searchable="value"
+    search="value"
+    empty="value"
+>
+    Advanced content
+</flux:select.options>
+```
+
+### With Livewire
+
+```blade
+<flux:select.options
+    wire:model="property"
+/>
+```
+
+## Accessibility
+
+- Component follows standard HTML accessibility practices
+- Keyboard navigation supported where applicable
+
+## Styling
+
+### Default Styling
+
+The component uses Tailwind CSS classes for styling. Key styling features:
+
+- **Dark mode support** - Automatically adapts to dark mode
+- **Border radius** - Rounded corners for modern appearance
+- **Shadows** - Depth and elevation effects
+
+### Customization
+
+You can customize the component by:
+
+- Adding custom classes via the `class` attribute
+- Using Tailwind's utility classes
+- Overriding CSS variables for theme colors
+
+
+## Related Components
+
+- [Select › Variants › Custom](./variants-custom.md)
+- [Select › Variants › Combobox](./variants-combobox.md)
+- [Select › Variants › Listbox](./variants-listbox.md)
+- [Select › Indicator › Index](./indicator-index.md)
+- [Select › Indicator › Variants › Check](./indicator-variants-check.md)
+
+## Technical Notes
+
+- Built on Flux UI custom elements for enhanced functionality
+
+---
+
+*Generated on February 17, 2026*
