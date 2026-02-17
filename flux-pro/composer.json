@@ -1,5 +1,7 @@
 {
   "name": "livewire/flux-pro",
+  "license": "MIT",
+  "description": "A collection of tools and utilities to enhance the development experience with Livewire",
   "require": {
     "php": "^8.4|^8.5",
     "illuminate/console": "^10.0|^11.0|^12.0",
