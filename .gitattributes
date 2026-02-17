@@ -6,6 +6,10 @@
 *.md diff=markdown
 *.php diff=php
 
-CHANGELOG.md export-ignore
-README.md export-ignore
-.github/workflows/browser-tests.yml export-ignore
+AGENTS.md export-ignore
+DOCUMENTATION-COMPLETE.md export-ignore
+
+/docs export-ignore
+/.ai export-ignore
+/.github export-ignore
+/.vscode export-ignore
