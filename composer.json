@@ -14,10 +14,10 @@
   },
   "autoload": {
     "psr-4": {
-      "FluxPro\\": "src/"
+      "FluxPro\\": "flux-pro/src/"
     },
     "files": [
-      "src/helpers.php"
+      "flux-pro/src/helpers.php"
     ]
   },
   "extra": {
