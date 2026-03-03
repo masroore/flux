@@ -1,4 +1,4 @@
-@blaze
+@blaze(fold: true)
 
 <template name="cursor">
     <path {{ $attributes->merge([

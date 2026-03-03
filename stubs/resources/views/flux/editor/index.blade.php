@@ -1,3 +1,5 @@
+@blaze
+
 @props([
     'toolbar' => null,
     'invalid' => null,

@@ -1,3 +1,5 @@
+@blaze
+
 @props([
     'selectableHeader' => null,
     'withConfirmation' => null,

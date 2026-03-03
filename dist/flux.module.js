@@ -1565,8 +1565,11 @@ function detangle() {
   return (callback) => (...args) => {
     if (blocked) return;
     blocked = true;
-    callback(...args);
-    blocked = false;
+    try {
+      callback(...args);
+    } finally {
+      blocked = false;
+    }
   };
 }
 function interest(trigger, panel, { gain, lose, focusable, useSafeArea }) {
@@ -1977,8 +1980,8 @@ function hydrateTemplate(template, slotsAndAttributes = { slots: {}, attrs: {} }
   clone.setAttribute("data-appended", "");
   return clone;
 }
-function isRTL() {
-  return document.documentElement.dir === "rtl";
+function isRTL(el) {
+  return getComputedStyle(el).direction === "rtl";
 }
 function isSafari() {
   return /^((?!chrome|android).)*safari/i.test(navigator.userAgent) && !navigator.userAgent.includes("CriOS") && !navigator.userAgent.includes("FxiOS");
@@ -4062,6 +4065,7 @@ var computePosition2 = (reference, floating, options) => {
 };
 
 // js/mixins/anchorable.js
+var useFixedStrategy = !(CSS.supports?.("selector(:popover-open)") ?? false);
 var Anchorable = class extends Mixin {
   boot({ options }) {
     options({
@@ -4105,7 +4109,8 @@ function anchor(target, invoke, setPosition, { position, offset: offsetValue, ga
   elMaxHeight = elMaxHeight === "none" ? null : parseFloat(elMaxHeight);
   return (event, forceX, forceY) => {
     computePosition2(invoke, target, {
-      placement: compilePlacement(position),
+      strategy: useFixedStrategy ? "fixed" : "absolute",
+      placement: compilePlacement(position, target),
       // Placements: ['top', 'top-start', 'top-end', 'right', 'right-start', 'right-end', 'bottom', 'bottom-start', 'bottom-end', 'left', 'left-start', 'left-end']
       middleware: [
         // Offset needs to be first, as per the Floating UI docs...
@@ -4136,14 +4141,14 @@ function anchor(target, invoke, setPosition, { position, offset: offsetValue, ga
     });
   };
 }
-function compilePlacement(anchor2) {
+function compilePlacement(anchor2, el) {
   let placement = anchor2.split(" ");
   switch (placement[0]) {
     case "start":
-      placement[0] = isRTL() ? "right" : "left";
+      placement[0] = isRTL(el) ? "right" : "left";
       break;
     case "end":
-      placement[0] = isRTL() ? "left" : "right";
+      placement[0] = isRTL(el) ? "left" : "right";
       break;
   }
   return placement.join("-");
@@ -4151,7 +4156,7 @@ function compilePlacement(anchor2) {
 function createDurablePositionSetter(target, { scrollY = true }) {
   let position = (x, y) => {
     Object.assign(target.style, {
-      position: "absolute",
+      position: useFixedStrategy ? "fixed" : "absolute",
       overflowY: scrollY ? "auto" : "hidden",
       left: `${x}px`,
       top: `${y}px`,
@@ -4812,6 +4817,11 @@ var UISelect = class extends UIControl {
           this._activatable.activateFirst();
         }
       });
+      this.addEventListener("open", () => {
+        if (this._filterable) {
+          this._filterable.filter("");
+        }
+      });
       this.addEventListener("close", () => {
         if (this._filterable) {
           requestAnimationFrame(() => {
@@ -5035,8 +5045,6 @@ var UISelect = class extends UIControl {
 element("selected-remove", UISelectedRemove);
 element("selected", UISelected);
 element("select", UISelect);
-inject(({ css }) => css`ui-select { display: block; }`);
-inject(({ css }) => css`ui-selected-option { display: contents; }`);
 function handleKeyboardNavigation(el, activatable) {
   on(el, "keydown", (e) => {
     if (!["ArrowDown", "ArrowUp"].includes(e.key)) return;
@@ -5342,7 +5350,7 @@ function handleAutocomplete(autocomplete, isStrict, root, input, selectable, pop
   };
   setAttribute2(input, "autocomplete", "off");
   setAttribute2(input, "aria-autocomplete", "list");
-  if (input.value !== "") {
+  if (input.value !== "" && selectable.isEmpty()) {
     selectable.setState(input.value);
   }
   let sync = () => {
@@ -5357,6 +5365,9 @@ function handleAutocomplete(autocomplete, isStrict, root, input, selectable, pop
     }
   };
   queueMicrotask(() => {
+    if (selectable.isEmpty() && input.value !== "") {
+      selectable.setState(input.value);
+    }
     selectable.onInitAndChange(() => sync());
   });
   root.addEventListener("interaction", (e) => {
@@ -5586,7 +5597,6 @@ var UIPillboxTrigger = class extends UIElement {
 };
 element("pillbox-trigger", UIPillboxTrigger);
 element("pillbox", UIPillbox);
-inject(({ css }) => css`ui-pillbox { display: block; }`);
 function openPopoverWithSpacebar(el) {
   on(el, "keydown", (e) => {
     if (e.key === " ") {
@@ -5671,7 +5681,7 @@ var UIOption = class extends UIElement {
     this._activatable = new Activatable(target);
     if (!this.hasAttribute("action")) {
       this._selectable = new Selectable(target, {
-        value: this.getValue(),
+        value: this._pendingValue ?? this.getValue(),
         label: this.getLabel(),
         selectedLabel: this.getSelectedLabel(),
         selectedInitially: this.hasAttribute("selected")
@@ -5683,9 +5693,24 @@ var UIOption = class extends UIElement {
           if (this.hasAttribute("selected")) this._selectable.setState(true);
           else this._selectable.setState(false);
         }
+        if (mutation.attributeName === "value") {
+          if (this._selectable) {
+            this._selectable.value = this.getValue();
+          }
+        }
       });
     });
-    observer.observe(this, { attributeFilter: ["selected"] });
+    observer.observe(this, { attributeFilter: ["selected", "value"] });
+  }
+  get value() {
+    return this._selectable?.value ?? this._pendingValue ?? this.getValue();
+  }
+  set value(val) {
+    if (!this._selectable) {
+      this._pendingValue = val + "";
+      return;
+    }
+    this._selectable.value = val + "";
   }
   get selected() {
     if (!this?._selectable) return false;
@@ -5725,10 +5750,6 @@ var UIOptionEmpty = class extends UIElement {
 };
 var UIEmpty = class extends UIOptionEmpty {
 };
-inject(({ css }) => css`ui-options:not([popover]), ui-option { display: block; cursor: default; }`);
-inject(({ css }) => css`ui-option-create { display: block; cursor: default; }`);
-inject(({ css }) => css`ui-option-empty { display: block; cursor: default; }`);
-inject(({ css }) => css`ui-empty { display: block; cursor: default; }`);
 element("option-create", UIOptionCreate);
 element("options", UIOptions);
 element("option", UIOption);
@@ -6939,7 +6960,6 @@ element("time-picker", UITimePicker);
 element("time-picker-trigger", UITimePickerTrigger);
 element("selected-time", UISelectedTime);
 element("time-picker-options", UITimePickerOptions);
-inject(({ css }) => css`ui-time-picker { display: block; }`);
 function initOptions(options, multiple) {
   let optionsId = assignId(options, "options");
   setAttribute2(options, "role", "listbox");
@@ -7245,7 +7265,6 @@ var UIDisclosureGroup = class _UIDisclosureGroup extends UIElement {
     });
   }
 };
-inject(({ css }) => css`ui-disclosure { display: block; }`);
 element("disclosure", UIDisclosure);
 element("disclosure-group", UIDisclosureGroup);
 
@@ -7299,7 +7318,6 @@ var UIGrip = class extends UIElement {
     });
   }
 };
-inject(({ css }) => css`ui-resizable { display: block; }`);
 element("resizable", UIResizable);
 element("grip", UIGrip);
 
@@ -7435,7 +7453,6 @@ var UICheckbox = class extends UIControl {
       this._selectable.onInitAndChange(() => {
         this._submittable.update(this._selectable.isSelected());
       });
-      this.value = this._selectable.getValue();
       queueMicrotask(() => {
         this._submittable.update(this._selectable.isSelected());
       });
@@ -7476,6 +7493,16 @@ var UICheckbox = class extends UIControl {
     }));
     respondToLabelClick(button);
   }
+  get value() {
+    return this._selectable?.getValue();
+  }
+  set value(val) {
+    if (!this._selectable) return;
+    this._selectable.value = val + "";
+    if (this._submittable) {
+      this._submittable.value = val + "";
+    }
+  }
   get checked() {
     return this._selectable.isSelected();
   }
@@ -7499,8 +7526,6 @@ var UICheckbox = class extends UIControl {
 };
 element("checkbox-group", UICheckboxGroup);
 element("checkbox", UICheckbox);
-inject(({ css }) => css`ui-checkbox-group { display: block; }`);
-inject(({ css }) => css`ui-checkbox { display: inline-block; user-select: none; }`);
 function respondToLabelClick(el) {
   el.closest("label")?.addEventListener("click", (e) => {
     if (!el.contains(e.target)) {
@@ -7925,7 +7950,9 @@ var Selectable3 = class _Selectable {
       return new MultipleSelection2(dates);
     } else if (config.mode === CalendarModes.RANGE) {
       let { start, end, preset } = value3 || {};
-      if (preset && presets[preset] && preset !== "custom") return new PresetRangeSelection(preset, config);
+      if (preset && presets[preset] && preset !== "custom") {
+        return new PresetRangeSelection(preset, config);
+      }
       if (!start && !end) return new EmptyRangeSelection();
       if (!end) return new PartialRangeSelection(DateValue.fromIsoDateString(start));
       return new RangeSelection(DateValue.fromIsoDateString(start), DateValue.fromIsoDateString(end));
@@ -8548,7 +8575,16 @@ var CalendarViewState = class {
   }
   setYear(year) {
     if (!year) return;
-    if (this.isWithinMinAndMax(this.month, year)) {
+    let month = this.month;
+    if (!this.isWithinMinAndMax(month, year)) {
+      if (this.config.min && DateValue.fromParts(year, month).isBefore(DateValue.firstDayOfMonth(this.config.min))) {
+        month = this.config.min.getMonth();
+      } else if (this.config.max && DateValue.fromParts(year, month).isAfter(this.config.max)) {
+        month = this.config.max.getMonth();
+      }
+    }
+    if (this.isWithinMinAndMax(month, year)) {
+      this.month = month;
       this.year = year;
     }
     this.observable.notify(ObservableTrigger2.VIEW_CHANGE);
@@ -8710,7 +8746,7 @@ var UICalendar = class extends UIElement {
       this._submittable.update(this.selectable.getValue());
     });
     this.observable.subscribe(ObservableTrigger2.SELECTION, () => {
-      this.anchorSelection();
+      this.anchorSelection(elDrivingConfig);
     });
     this.observable.subscribe(ObservableTrigger2.VIEW_CHANGE, () => {
       this.dispatchEvent(new Event("navigate", { bubbles: false, cancelable: true }));
@@ -8747,10 +8783,11 @@ var UICalendar = class extends UIElement {
   navigatePrevious() {
     this.viewState.previousMonth();
   }
-  anchorSelection() {
+  anchorSelection(elDrivingConfig) {
     let focusedEl = document.activeElement;
     let isFocusedOnADateButton = this.contains(focusedEl) && focusedEl.closest("[data-date]") !== null;
     if (isFocusedOnADateButton) return;
+    if (elDrivingConfig.hasAttribute("force-open-to")) return;
     this.viewState.setDate(
       this.selectable.lowerBound(DateValue.today())
     );
@@ -8945,11 +8982,10 @@ var UICalendarYear = class extends UIElement {
       (_, i) => currentYear - this.numberOfPastYears + i
     );
     let renderableYears = years.map((year) => {
-      let firstDayOfMonth = new DateValue(year, 1);
-      let lastDayOfMonth = new DateValue(year, 12, 31);
-      if (!this.validator.isBetweenMinMax(firstDayOfMonth) && !this.validator.isBetweenMinMax(lastDayOfMonth)) {
-        return null;
-      }
+      let yearStart = new DateValue(year, 1);
+      let yearEnd = new DateValue(year, 12, 31);
+      if (this.config.min && yearEnd.isBefore(this.config.min)) return null;
+      if (this.config.max && yearStart.isAfter(this.config.max)) return null;
       return year;
     }).filter(Boolean);
     renderTemplate(select.querySelector("template"), (hydrate) => {
@@ -9124,14 +9160,6 @@ var UICalendarInputs = class extends UIElement {
     }
   }
 };
-inject(({ css }) => css`
-    ui-calendar-preset,
-    ui-calendar-previous,
-    ui-calendar-next {
-        display: block;
-        user-select: none;
-    }
-`);
 element("calendar", UICalendar);
 element("calendar-today", UICalendarToday);
 element("calendar-presets", UICalendarPresets);
@@ -9489,7 +9517,6 @@ var UIDatePickerSelect = class extends UIElement {
 element("date-picker", UIDatePicker);
 element("date-picker-select", UIDatePickerSelect);
 element("selected-date", UISelectedDate);
-inject(({ css }) => css`ui-date-picker { display: block; }`);
 inject(({ css }) => css`
 /* For Chrome, Safari, Edge */
 ui-date-picker input[type="date"]::-webkit-calendar-picker-indicator {
@@ -9747,8 +9774,39 @@ var UIComposer = class extends UIControl {
     };
   }
 };
-inject(({ css }) => css`ui-composer { display: block; }`);
 element("composer", UIComposer);
+
+// js/progress.js
+var UIProgress = class extends UIElement {
+  boot() {
+    this._controllable = new Controllable(this);
+    this._controllable.initial((initial) => initial != null && this.setValue(parseFloat(initial)));
+    this._controllable.getter(() => this.currentValue);
+    this._controllable.setter((v) => this.setValue(parseFloat(v)));
+    setAttribute2(this, "role", "progressbar");
+    setAttribute2(this, "aria-valuemin", 0);
+    if (this.currentValue === void 0) {
+      this.setValue(this.hasAttribute("value") ? parseFloat(this.getAttribute("value")) : 0);
+    }
+    new MutationObserver(() => this.updateVisual()).observe(this, {
+      attributes: true,
+      attributeFilter: ["max"]
+    });
+  }
+  setValue(value3) {
+    this.currentValue = value3;
+    this.updateVisual();
+  }
+  updateVisual() {
+    let max2 = this.hasAttribute("max") ? parseFloat(this.getAttribute("max")) : 100;
+    let pct = Math.max(0, Math.min(100, this.currentValue / max2 * 100));
+    this.style.setProperty("--flux-progress", pct);
+    this.style.setProperty("--flux-progress-percentage", pct + "%");
+    setAttribute2(this, "aria-valuenow", this.currentValue);
+    setAttribute2(this, "aria-valuemax", max2);
+  }
+};
+element("progress", UIProgress);
 
 // js/context.js
 var UIContext = class extends UIElement {
@@ -9757,8 +9815,11 @@ var UIContext = class extends UIElement {
     let overlay = this.overlay();
     this._disabled = this.hasAttribute("disabled");
     this._popoverable = new Popoverable(overlay);
+    let virtualReference = {
+      getBoundingClientRect: () => ({ x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 })
+    };
     this._anchorable = new Anchorable(overlay, {
-      reference: trigger,
+      reference: virtualReference,
       auto: false,
       position: this.hasAttribute("position") ? this.getAttribute("position") : void 0,
       gap: this.hasAttribute("gap") ? this.getAttribute("gap") : void 0,
@@ -9770,7 +9831,17 @@ var UIContext = class extends UIElement {
     });
     on(trigger, "contextmenu", (e) => {
       e.preventDefault();
-      this._anchorable.reposition(e.pageX, e.pageY);
+      virtualReference.getBoundingClientRect = () => ({
+        x: e.clientX,
+        y: e.clientY,
+        width: 0,
+        height: 0,
+        top: e.clientY,
+        left: e.clientX,
+        right: e.clientX,
+        bottom: e.clientY
+      });
+      this._anchorable.reposition();
       this._popoverable.setState(true);
       if (this.hasAttribute("detail")) {
         setAttribute2(overlay, "data-detail", this.getAttribute("detail"));
@@ -9989,16 +10060,17 @@ var UISubmenu = class extends UIElement {
 };
 var UIMenuCheckbox = class extends UIElement {
   boot() {
-    this._disabled = this.hasAttribute("disabled");
-    this._disableable = new Disableable(this);
     let button = this;
-    if (this._disabled) {
-      setAttribute2(button, "disabled", "");
-      setAttribute2(button, "aria-disabled", "true");
-    }
+    this._disableable = new Disableable(this);
+    this._disableable.onInitAndChange((disabled) => {
+      if (disabled) {
+        setAttribute2(button, "aria-disabled", "true");
+      } else {
+        removeAttribute(button, "aria-disabled");
+      }
+    });
     assignId(button, "menu-checkbox");
     setAttribute2(button, "role", "menuitemcheckbox");
-    if (this._disabled) return;
     button._focusable = new Focusable(button, { disableable: this._disableable, hover: true, tabbableAttr: "data-active" });
     button._selectable = new Selectable(button, {
       toggleable: true,
@@ -10018,27 +10090,28 @@ var UIMenuCheckbox = class extends UIElement {
     this._selectable.onChange(detangled(() => {
       this._controllable.dispatch();
     }));
-    on(button, "click", () => {
+    on(button, "click", this._disableable.enabled(() => {
       if (!this.hasAttribute("keep-open")) {
         this.dispatchEvent(new CustomEvent("lofi-close-popovers", { bubbles: true }));
       }
       button._selectable.press();
-    });
+    }));
     respondToKeyboardClick(button);
   }
 };
 var UIMenuRadio = class extends UIElement {
   boot() {
-    this._disabled = this.hasAttribute("disabled");
-    this._disableable = new Disableable(this);
     let button = this;
-    if (this._disabled) {
-      setAttribute2(button, "disabled", "");
-      setAttribute2(button, "aria-disabled", "true");
-    }
+    this._disableable = new Disableable(this);
+    this._disableable.onInitAndChange((disabled) => {
+      if (disabled) {
+        setAttribute2(button, "aria-disabled", "true");
+      } else {
+        removeAttribute(button, "aria-disabled");
+      }
+    });
     assignId(button, "menu-radio");
     setAttribute2(button, "role", "menuitemradio");
-    if (this._disabled) return;
     button._focusable = new Focusable(button, { disableable: this._disableable, hover: true, tabbableAttr: "data-active" });
     button._selectable = new Selectable(button, {
       toggleable: false,
@@ -10048,12 +10121,12 @@ var UIMenuRadio = class extends UIElement {
       ariaAttr: "aria-checked",
       selectedInitially: this.hasAttribute("checked")
     });
-    on(button, "click", () => {
+    on(button, "click", this._disableable.enabled(() => {
       if (!this.hasAttribute("keep-open")) {
         this.dispatchEvent(new CustomEvent("lofi-close-popovers", { bubbles: true }));
       }
       button._selectable.press();
-    });
+    }));
     respondToKeyboardClick(button);
   }
 };
@@ -10095,9 +10168,6 @@ var UIMenuCheckboxGroup = class extends UIElement {
     }));
   }
 };
-inject(({ css }) => css`ui-menu[popover]:popover-open { display: block; }`);
-inject(({ css }) => css`ui-menu[popover].\:popover-open { display: block; }`);
-inject(({ css }) => css`ui-menu-checkbox, ui-menu-radio { cursor: default; display: contents; }`);
 element("menu", UIMenu);
 element("submenu", UISubmenu);
 element("menu-checkbox", UIMenuCheckbox);
@@ -10127,38 +10197,41 @@ function respondToKeyboardClick(el) {
   });
 }
 function initializeMenuItem(el) {
-  el._disableable = new Disableable(el);
-  el._disabled = el.hasAttribute("disabled");
   let link = el.querySelector("a");
   let button = el;
   let submenu = el.parentElement.matches("ui-submenu") && el.parentElement.querySelector("ui-menu[popover]");
   let target = link || button;
+  el._disableable = new Disableable(el);
+  el._disableable.onInitAndChange((disabled) => {
+    if (disabled) {
+      setAttribute2(target, "aria-disabled", "true");
+    } else {
+      removeAttribute(target, "aria-disabled");
+    }
+  });
   assignId(target, "menu-item");
   setAttribute2(target, "role", "menuitem");
-  if (el._disabled) return;
   target._focusable = new Focusable(target, { disableable: el._disableable, hover: true, tabbableAttr: "data-active" });
   if (!submenu) {
-    if (!el.hasAttribute("disabled")) {
-      let handler = () => {
-        if (!el.hasAttribute("keep-open")) {
-          el.dispatchEvent(new CustomEvent("lofi-close-popovers", { bubbles: true, detail: { immediate: true } }));
-        }
-      };
-      on(el, "mouseup", handler);
-      on(el, "click", (e) => !e.isTrusted && handler());
-    }
+    let handler = el._disableable.enabled(() => {
+      if (!el.hasAttribute("keep-open")) {
+        el.dispatchEvent(new CustomEvent("lofi-close-popovers", { bubbles: true, detail: { immediate: true } }));
+      }
+    });
+    on(el, "mouseup", handler);
+    on(el, "click", (e) => !e.isTrusted && handler());
     respondToKeyboardClick(button);
   } else {
     submenu._popoverable = new Popoverable(submenu, { triggers: [button] });
     submenu._anchorable = new Anchorable(submenu, {
       reference: button,
-      position: submenu.hasAttribute("position") ? submenu.getAttribute("position") : isRTL() ? "left start" : "right start",
+      position: submenu.hasAttribute("position") ? submenu.getAttribute("position") : isRTL(submenu) ? "left start" : "right start",
       gap: submenu.hasAttribute("gap") ? submenu.getAttribute("gap") : "-5",
       crossAxis: true
     });
-    button.addEventListener("click", (e) => {
+    button.addEventListener("click", el._disableable.enabled((e) => {
       submenu._popoverable.setState(true);
-    });
+    }));
     let { clear } = interest(button, submenu, {
       gain() {
         submenu._popoverable.setState(true);
@@ -10297,7 +10370,7 @@ var UITooltip = class extends UIElement {
         removeInterest = null;
       }
       if (!disabled) {
-        let result = interest(button, overlay, {
+        let result = interest(this, overlay, {
           gain() {
             overlay._popoverable.setState(true);
           },
@@ -10686,10 +10759,10 @@ var UISlider = class extends UIElement {
             this.state.increment(i, this.config.bigStep * -1);
             break;
           case "ArrowRight":
-            this.state.increment(i, this.config.bigStep * (isRTL() ? -1 : 1));
+            this.state.increment(i, this.config.bigStep * (isRTL(this) ? -1 : 1));
             break;
           case "ArrowLeft":
-            this.state.increment(i, this.config.bigStep * (isRTL() ? 1 : -1));
+            this.state.increment(i, this.config.bigStep * (isRTL(this) ? 1 : -1));
             break;
           default:
             return;
@@ -10863,7 +10936,7 @@ var UISlider = class extends UIElement {
     let trackLeft = trackRect.left + trackPadding;
     let relativeX = x - trackLeft;
     let rescaled = clamp2(relativeX / trackWidth, 0, 1);
-    rescaled = isRTL() ? 1 - rescaled : rescaled;
+    rescaled = isRTL(this) ? 1 - rescaled : rescaled;
     let value3 = (max2 - min2) * rescaled + min2;
     value3 = roundValueToStep(value3, step, min2);
     value3 = clamp2(value3, min2, max2);
@@ -11010,7 +11083,6 @@ function respondToLabelClick2(el) {
     }
   });
 }
-inject(({ css }) => css`ui-switch { display: inline-block; user-select: none; }`);
 element("switch", UISwitch);
 
 // js/field.js
@@ -11097,10 +11169,6 @@ var UIDescription = class extends UIElement {
     this.closest("ui-field")?.associateDescription(this);
   }
 };
-inject(({ css }) => css`
-    ui-label { display: inline-block; cursor: default; }
-    ui-description { display: block; }
-`);
 element("field", UIField);
 element("label", UILabel);
 element("description", UIDescription);
@@ -11115,7 +11183,6 @@ var UILegend = class extends UIElement {
     }
   }
 };
-inject(({ css }) => css`ui-legend { display: block; }`);
 element("legend", UILegend);
 
 // js/chart/chart.js
@@ -11242,36 +11309,56 @@ function generateChartObject(config) {
                 }
                 if (itemMetadata.type === "stack") {
                   let gap = Number(itemMetadata.gap.replace("px", ""));
-                  let value3 = 0;
-                  itemMetadata.children.forEach((childMetadata, index) => {
+                  let positiveValue = 0;
+                  let negativeValue = 0;
+                  let hasPositive = false;
+                  let hasNegative = false;
+                  itemMetadata.children.forEach((childMetadata) => {
                     if (childMetadata.type === "bar") {
                       if (!childMetadata.field) return;
                       if (d[childMetadata.field] === void 0) return;
-                      if (index > 0) {
-                        value3 += value3 >= 0 ? gap : -gap;
+                      let val = d[childMetadata.field];
+                      if (val >= 0) {
+                        if (hasPositive) positiveValue += gap;
+                        positiveValue += val;
+                        hasPositive = true;
+                      } else {
+                        if (hasNegative) negativeValue -= gap;
+                        negativeValue += val;
+                        hasNegative = true;
                       }
-                      value3 += d[childMetadata.field];
                     }
                   });
-                  acc.push(value3);
+                  if (hasPositive) acc.push(positiveValue);
+                  if (hasNegative) acc.push(negativeValue);
                 }
               });
               return acc;
             }, []));
             let stacksData = chart.data.flatMap((d) => chart.stacksMetadata.reduce((acc, stackMetadata) => {
               let gap = Number(stackMetadata.gap.replace("px", ""));
-              let value3 = 0;
-              stackMetadata.children.forEach((childMetadata, index) => {
+              let positiveValue = 0;
+              let negativeValue = 0;
+              let hasPositive = false;
+              let hasNegative = false;
+              stackMetadata.children.forEach((childMetadata) => {
                 if (childMetadata.type === "bar") {
                   if (!childMetadata.field) return;
                   if (d[childMetadata.field] === void 0) return;
-                  if (index > 0) {
-                    value3 += value3 >= 0 ? gap : -gap;
+                  let val = d[childMetadata.field];
+                  if (val >= 0) {
+                    if (hasPositive) positiveValue += gap;
+                    positiveValue += val;
+                    hasPositive = true;
+                  } else {
+                    if (hasNegative) negativeValue -= gap;
+                    negativeValue += val;
+                    hasNegative = true;
                   }
-                  value3 += d[childMetadata.field];
                 }
               });
-              acc.push(value3);
+              if (hasPositive) acc.push(positiveValue);
+              if (hasNegative) acc.push(negativeValue);
               return acc;
             }, []));
             let data = chart.data.flatMap((d) => this.keys.reduce((acc, key) => {
@@ -11425,13 +11512,37 @@ function generateChartObject(config) {
               }
               let stackStartOffset = (fullGroupWidth - stackWidth) / 2;
               let stackGap = Number(stackMetadata.gap.replace("px", ""));
-              let previousHeight = [];
+              let previousPositiveHeight = [];
+              let previousNegativeHeight = [];
+              let stackRadius = stackMetadata.radius;
+              let topBarField = [];
+              let bottomBarField = [];
+              if (stackRadius) {
+                filteredMetadata.forEach((itemMetadata) => {
+                  if (itemMetadata.type === "bar") {
+                    data[itemMetadata.field].forEach((value3, index) => {
+                      if (value3 >= 0) {
+                        topBarField[index] = itemMetadata.field;
+                        if (bottomBarField[index] === void 0) {
+                          bottomBarField[index] = itemMetadata.field;
+                        }
+                      } else {
+                        bottomBarField[index] = itemMetadata.field;
+                        if (topBarField[index] === void 0) {
+                          topBarField[index] = itemMetadata.field;
+                        }
+                      }
+                    });
+                  }
+                });
+              }
               return filteredMetadata.reduce((acc, itemMetadata) => {
                 if (itemMetadata.type === "bar") {
                   let bars = [];
                   data[itemMetadata.field].forEach((value3, index) => {
-                    if (previousHeight[index] === void 0) {
-                      previousHeight[index] = 0;
+                    if (previousPositiveHeight[index] === void 0) {
+                      previousPositiveHeight[index] = 0;
+                      previousNegativeHeight[index] = 0;
                     }
                     let { start } = chart.axes.x.scale(chart.data[index][chart.axes.x.key], { area: chart.axes.x.asArea });
                     let x = start + stackStartOffset;
@@ -11440,7 +11551,30 @@ function generateChartObject(config) {
                     let width = stackWidth;
                     let minHeight = Number(itemMetadata.minHeight.replace("px", ""));
                     let radius = itemMetadata.radius;
-                    y = value3 >= 0 ? y - previousHeight[index] : y + previousHeight[index];
+                    if (stackRadius) {
+                      let isTopBar = itemMetadata.field === topBarField[index];
+                      let isBottomBar = itemMetadata.field === bottomBarField[index];
+                      let visualRadius = { topLeft: 0, topRight: 0, bottomLeft: 0, bottomRight: 0 };
+                      if (isTopBar) {
+                        visualRadius.topLeft = stackRadius.topLeft;
+                        visualRadius.topRight = stackRadius.topRight;
+                      }
+                      if (isBottomBar) {
+                        visualRadius.bottomLeft = stackRadius.bottomLeft;
+                        visualRadius.bottomRight = stackRadius.bottomRight;
+                      }
+                      if (value3 < 0) {
+                        radius = {
+                          topLeft: visualRadius.bottomLeft,
+                          topRight: visualRadius.bottomRight,
+                          bottomLeft: visualRadius.topLeft,
+                          bottomRight: visualRadius.topRight
+                        };
+                      } else {
+                        radius = visualRadius;
+                      }
+                    }
+                    y = value3 >= 0 ? y - previousPositiveHeight[index] : y + previousNegativeHeight[index];
                     if (height < minHeight) {
                       y -= minHeight - height;
                       height = minHeight;
@@ -11462,7 +11596,11 @@ function generateChartObject(config) {
                         return getBarPath(x, y, width, height, radius);
                       }
                     };
-                    previousHeight[index] += height + stackGap;
+                    if (value3 >= 0) {
+                      previousPositiveHeight[index] += height + stackGap;
+                    } else {
+                      previousNegativeHeight[index] += height + stackGap;
+                    }
                     bars.push(bar);
                   });
                   acc[itemMetadata.field] = bars;
@@ -11601,13 +11739,37 @@ function generateChartObject(config) {
               if (itemMetadata.type === "stack") {
                 let stack = [];
                 let stackGap = Number(itemMetadata.gap.replace("px", ""));
-                let previousHeight = [];
+                let previousPositiveHeight = [];
+                let previousNegativeHeight = [];
+                let stackRadius = itemMetadata.radius;
+                let topBarField = [];
+                let bottomBarField = [];
+                if (stackRadius) {
+                  itemMetadata.children.forEach((child) => {
+                    if (child.type === "bar") {
+                      data[child.field].forEach((value3, index2) => {
+                        if (value3 >= 0) {
+                          topBarField[index2] = child.field;
+                          if (bottomBarField[index2] === void 0) {
+                            bottomBarField[index2] = child.field;
+                          }
+                        } else {
+                          bottomBarField[index2] = child.field;
+                          if (topBarField[index2] === void 0) {
+                            topBarField[index2] = child.field;
+                          }
+                        }
+                      });
+                    }
+                  });
+                }
                 itemMetadata.children.forEach((child) => {
                   if (child.type === "bar") {
                     let bars = [];
                     data[child.field].forEach((value3, index2) => {
-                      if (previousHeight[index2] === void 0) {
-                        previousHeight[index2] = 0;
+                      if (previousPositiveHeight[index2] === void 0) {
+                        previousPositiveHeight[index2] = 0;
+                        previousNegativeHeight[index2] = 0;
                       }
                       let { start } = chart.axes.x.scale(chart.data[index2][chart.axes.x.key], { area: chart.axes.x.asArea });
                       let x = start + itemOffset;
@@ -11615,11 +11777,34 @@ function generateChartObject(config) {
                       let height = value3 >= 0 ? chart.axes.y.scale(0).center - y : chart.axes.y.scale(value3).center - y;
                       let minHeight = Number(child.minHeight.replace("px", ""));
                       let radius = child.radius;
+                      if (stackRadius) {
+                        let isTopBar = child.field === topBarField[index2];
+                        let isBottomBar = child.field === bottomBarField[index2];
+                        let visualRadius = { topLeft: 0, topRight: 0, bottomLeft: 0, bottomRight: 0 };
+                        if (isTopBar) {
+                          visualRadius.topLeft = stackRadius.topLeft;
+                          visualRadius.topRight = stackRadius.topRight;
+                        }
+                        if (isBottomBar) {
+                          visualRadius.bottomLeft = stackRadius.bottomLeft;
+                          visualRadius.bottomRight = stackRadius.bottomRight;
+                        }
+                        if (value3 < 0) {
+                          radius = {
+                            topLeft: visualRadius.bottomLeft,
+                            topRight: visualRadius.bottomRight,
+                            bottomLeft: visualRadius.topLeft,
+                            bottomRight: visualRadius.topRight
+                          };
+                        } else {
+                          radius = visualRadius;
+                        }
+                      }
                       if (height < minHeight) {
                         y -= minHeight - height;
                         height = minHeight;
                       }
-                      y = value3 >= 0 ? y - previousHeight[index2] : y + previousHeight[index2];
+                      y = value3 >= 0 ? y - previousPositiveHeight[index2] : y + previousNegativeHeight[index2];
                       if (value3 < 0) {
                         radius = {
                           topLeft: radius.bottomLeft,
@@ -11637,7 +11822,11 @@ function generateChartObject(config) {
                           return getBarPath(x, y, width, height, radius);
                         }
                       };
-                      previousHeight[index2] += height + stackGap;
+                      if (value3 >= 0) {
+                        previousPositiveHeight[index2] += height + stackGap;
+                      } else {
+                        previousNegativeHeight[index2] += height + stackGap;
+                      }
                       bars.push(bar);
                     });
                     acc[child.field] = bars;
@@ -11793,7 +11982,7 @@ function generateTickValues(data, axis, domain) {
       tickValues = tickValues.filter((_, i) => i % step === 0);
     }
   } else if (axis.type === "time") {
-    let [_, ticks] = generateDateFormatAndTicks(domain[0], domain[1], axis.tickCount, axis.interval);
+    let [_, ticks] = generateDateFormatAndTicks(domain[0], domain[1], axis.tickCount, axis.interval, axis.asArea);
     return ticks;
   } else if (axis.type === "categorical") {
     data.forEach((datum) => {
@@ -12036,7 +12225,7 @@ function scaleTime(domain, range, values) {
     };
   };
 }
-function generateDateFormatAndTicks(start, end, tickCount, interval) {
+function generateDateFormatAndTicks(start, end, tickCount, interval, asArea = false) {
   let startDate = start;
   let endDate = end;
   const diffMs = endDate - startDate;
@@ -12124,8 +12313,17 @@ function generateDateFormatAndTicks(start, end, tickCount, interval) {
     incrementFn = (date) => new Date(Date.UTC(date.getUTCFullYear() + yearStep, 0, 1));
     firstTick = new Date(Date.UTC(startDate.getUTCFullYear(), 0, 1));
   }
-  let ticks = [startDate];
-  let currentTick = startDate;
+  let startingTick = startDate;
+  if (asArea) {
+    let nextTick = incrementFn(firstTick);
+    while (nextTick <= startDate) {
+      firstTick = nextTick;
+      nextTick = incrementFn(firstTick);
+    }
+    startingTick = firstTick;
+  }
+  let ticks = [startingTick];
+  let currentTick = startingTick;
   while (currentTick <= endDate) {
     currentTick = incrementFn(currentTick);
     if (currentTick <= endDate) {
@@ -12258,6 +12456,7 @@ var UIChart = class extends HTMLElement {
       let stackMetadata = {
         width: stackTemplate.getAttribute("width") ?? "90%",
         gap: stackTemplate.getAttribute("gap") ?? "0",
+        radius: stackTemplate.hasAttribute("radius") ? parseRadius(stackTemplate.getAttribute("radius")) : null,
         children: []
       };
       stackTemplate.querySelectorAll('template[name="bar"]').forEach((barTemplate) => {
@@ -12287,6 +12486,7 @@ var UIChart = class extends HTMLElement {
             type: "stack",
             width: itemTemplate.getAttribute("width"),
             gap: itemTemplate.getAttribute("gap") ?? "0",
+            radius: itemTemplate.hasAttribute("radius") ? parseRadius(itemTemplate.getAttribute("radius")) : null,
             children: []
           };
           itemTemplate.querySelectorAll('template[name="bar"]').forEach((barTemplate) => {
@@ -12336,14 +12536,6 @@ var UIChart = class extends HTMLElement {
       cursor.setAttribute("data-cursor", "");
       svg.appendChild(cursor);
     }
-    if (templates.tooltip) {
-      tooltip = hydrateTemplate(templates.tooltip);
-      templates.tooltip.after(tooltip);
-    }
-    if (templates.summary) {
-      summary = hydrateTemplate(templates.summary);
-      templates.summary.after(summary);
-    }
     let gutter = { left: 8, right: 8, top: 8, bottom: 8 };
     if (templates.svg?.hasAttribute("gutter")) {
       let values = templates.svg?.getAttribute("gutter").split(" ").map((i) => i.replace("px", "")).map(Number);
@@ -12381,6 +12573,14 @@ var UIChart = class extends HTMLElement {
       });
       visibilityObserver.observe(svg.parentElement);
       return;
+    }
+    if (templates.tooltip) {
+      tooltip = hydrateTemplate(templates.tooltip);
+      templates.tooltip.after(tooltip);
+    }
+    if (templates.summary) {
+      summary = hydrateTemplate(templates.summary);
+      templates.summary.after(summary);
     }
     let chart = generateChartObject({
       locale,
@@ -12877,6 +13077,7 @@ var UIChart = class extends HTMLElement {
       if (cursorType === "line") svg.querySelectorAll("[data-cursor]").forEach((i) => overlay.before(i));
       if (checkOverflow) {
         let overflow = getSvgOverflow(svg);
+        adjustOverflowForPendingTickRotation(svg, chart, gutter, overflow);
         chart.updateDimensions({ width: chart.width, height: chart.height }, {
           left: gutter.left + overflow.left,
           right: gutter.right + overflow.right,
@@ -12945,6 +13146,27 @@ function hydrateSvgTemplate(template) {
   svg.setAttribute("version", "1.1");
   svg.innerHTML = template.innerHTML;
   return svg.firstElementChild;
+}
+function adjustOverflowForPendingTickRotation(svg, chart, gutter, overflow) {
+  let tickLabelGroupEl = svg.querySelector('[data-tick-label-group][data-axis="x"]');
+  if (!tickLabelGroupEl) return;
+  if (chart.axes.x.type !== "categorical") return;
+  if (hasOverlappingTicks(tickLabelGroupEl, chart.axes.x)) return;
+  let widthReduction = gutter.left + overflow.left + gutter.right + overflow.right - (chart.inset.left + chart.inset.right);
+  if (widthReduction <= 0) return;
+  let children = Array.from(tickLabelGroupEl.children).filter((child) => child.style.display !== "none");
+  for (let i = 0; i < children.length - 1; i++) {
+    let rect = children[i].getBoundingClientRect();
+    let nextRect = children[i + 1].getBoundingClientRect();
+    let adjustedGap = nextRect.left - rect.right - widthReduction / Math.max(1, children.length - 1);
+    if (adjustedGap < 20) {
+      let undo = rotateTickLabels(tickLabelGroupEl);
+      let rotatedOverflow = getSvgOverflow(svg);
+      overflow.bottom = Math.max(overflow.bottom, rotatedOverflow.bottom);
+      undo();
+      return;
+    }
+  }
 }
 function handleTickOverflow(tickLabelGroupEl, axis) {
   if (!hasOverlappingTicks(tickLabelGroupEl, axis)) return;
@@ -13139,7 +13361,6 @@ var UIButton = class extends UIElement {
     }
   }
 };
-inject(({ css }) => css`ui-button { display: block; }`);
 element("button", UIButton);
 
 // js/close.js
@@ -13476,7 +13697,6 @@ var UIRadio = class extends UIControl {
       dataAttr: "data-checked",
       ariaAttr: "aria-checked"
     });
-    this.value = this._selectable.getValue();
     this._selectable.onChange(() => {
       if (this._selectable.isSelected()) this._focusable.focus(false);
     });
@@ -13519,6 +13739,13 @@ var UIRadio = class extends UIControl {
       isUsingKeyboard() && this._selectable.select();
     });
   }
+  get value() {
+    return this._selectable?.getValue();
+  }
+  set value(val) {
+    if (!this._selectable) return;
+    this._selectable.value = val + "";
+  }
   get checked() {
     return this._selectable.isSelected();
   }
@@ -13537,8 +13764,6 @@ function respondToLabelClick3(el) {
     }
   });
 }
-inject(({ css }) => css`ui-radio-group { display: block; }`);
-inject(({ css }) => css`ui-radio { display: inline-block; user-select: none; }`);
 element("radio-group", UIRadioGroup);
 element("radio", UIRadio);
 
@@ -13748,7 +13973,6 @@ function initializePanel(el) {
   };
   el._initialized = true;
 }
-inject(({ css }) => css`ui-tab-group, ui-tabs { display: block; cursor: default; }`);
 element("tab-group", UITabGroup);
 element("tabs-scroll-area", UITabsScrollArea);
 element("tabs", UITabs);
@@ -13868,10 +14092,10 @@ var UIOTP = class extends UIControl {
             requestAnimationFrame(() => this.focusPrev(i));
           }
         } else if (e.key === "ArrowRight") {
-          isRTL() ? this.focusPrev(i) : this.focusNext(i);
+          isRTL(this) ? this.focusPrev(i) : this.focusNext(i);
           e.preventDefault();
         } else if (e.key === "ArrowLeft") {
-          isRTL() ? this.focusNext(i) : this.focusPrev(i);
+          isRTL(this) ? this.focusNext(i) : this.focusPrev(i);
           e.preventDefault();
         }
       });

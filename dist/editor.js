@@ -20613,10 +20613,8 @@ img.ProseMirror-separator {
   };
   if (!customElements.get("ui-editor")) {
     element("editor", UIEditor);
-    inject(({ css }) => css`ui-editor { display: block; }`);
   }
   if (!customElements.get("ui-editor-content")) {
     element("editor-content", UIEditorContent);
-    inject(({ css }) => css`ui-editor-content { display: block; }`);
   }
 })();
