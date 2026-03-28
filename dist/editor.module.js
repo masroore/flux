@@ -122,6 +122,7 @@ inject(({ css }) => css`[data-flux-allow-scroll] { pointer-events: auto; }`);
 // js/element.js
 var UIElement = class extends HTMLElement {
   wasDisconnected = false;
+  onUnmounts = [];
   constructor() {
     super();
     this.boot?.();
@@ -140,9 +141,14 @@ var UIElement = class extends HTMLElement {
     queueMicrotask(() => {
       if (this.wasDisconnected) {
         this.unmount?.();
+        this.onUnmounts.forEach((i) => i());
+        this.onUnmounts = [];
       }
       this.wasDisconnected = false;
     });
+  }
+  onUnmount(callback) {
+    this.onUnmounts.push(callback);
   }
   mixin(func, options = {}) {
     return new func(this, options);

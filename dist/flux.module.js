@@ -1931,36 +1931,6 @@ function initFauxButton(el, isDisabled, action) {
   }));
   on(el, "keyup", ifKey(" ", () => action()));
 }
-function responsiveAttributeValue(el, name, fallback = null) {
-  let getValue = () => {
-    let value3 = el.getAttribute(name);
-    let breakpoints = {
-      sm: 640,
-      md: 768,
-      lg: 1024,
-      xl: 1280,
-      "2xl": 1536
-    };
-    for (let [breakpoint, minWidth] of Object.entries(breakpoints).reverse()) {
-      let responsiveValue = el.getAttribute(`${breakpoint}:${name}`);
-      if (responsiveValue && window.innerWidth >= minWidth) {
-        return responsiveValue;
-      }
-    }
-    return value3 || fallback;
-  };
-  let currentValue = getValue();
-  let callbacks = [];
-  new ResizeObserver(() => {
-    let newValue = getValue();
-    let memo = JSON.stringify(currentValue);
-    if (JSON.stringify(newValue) !== memo) {
-      currentValue = newValue;
-      callbacks.forEach((callback) => callback(newValue));
-    }
-  }).observe(window.document.documentElement);
-  return [currentValue, (callback) => callbacks.push(callback)];
-}
 function getLocale() {
   return navigator?.language || document.documentElement.lang || "en-US";
 }
@@ -2008,6 +1978,7 @@ var Observable = class {
 // js/element.js
 var UIElement = class extends HTMLElement {
   wasDisconnected = false;
+  onUnmounts = [];
   constructor() {
     super();
     this.boot?.();
@@ -2026,9 +1997,14 @@ var UIElement = class extends HTMLElement {
     queueMicrotask(() => {
       if (this.wasDisconnected) {
         this.unmount?.();
+        this.onUnmounts.forEach((i) => i());
+        this.onUnmounts = [];
       }
       this.wasDisconnected = false;
     });
+  }
+  onUnmount(callback) {
+    this.onUnmounts.push(callback);
   }
   mixin(func, options = {}) {
     return new func(this, options);
@@ -2185,17 +2161,14 @@ var Dialogable = class extends Mixin {
     });
     observer.observe(this.el, { attributeFilter: ["open"] });
     if (this.options().clickOutside) {
+      let contentEl = this.el.querySelector("[data-flux-modal-content]") || this.el;
       this.el.addEventListener("click", (e) => {
-        if (e.target !== this.el) {
-          lastMouseDownEvent = null;
-          return;
-        }
-        if (lastMouseDownEvent && clickHappenedOutside(this.el, lastMouseDownEvent) && clickHappenedOutside(this.el, e)) {
+        if (e.target !== contentEl && contentEl?.contains(e.target)) return;
+        if (lastMouseDownEvent && clickHappenedOutside(contentEl, lastMouseDownEvent) && clickHappenedOutside(contentEl, e)) {
           this.cancel();
           e.preventDefault();
           e.stopPropagation();
         }
-        lastMouseDownEvent = null;
       });
     }
     if (this.el.hasAttribute("open")) {
@@ -4154,7 +4127,7 @@ function compilePlacement(anchor2, el) {
   return placement.join("-");
 }
 function createDurablePositionSetter(target, { scrollY = true }) {
-  let position = (x, y) => {
+  let update = (x, y, width, height) => {
     Object.assign(target.style, {
       position: useFixedStrategy ? "fixed" : "absolute",
       overflowY: scrollY ? "auto" : "hidden",
@@ -4162,17 +4135,21 @@ function createDurablePositionSetter(target, { scrollY = true }) {
       top: `${y}px`,
       // This is required to reset the `popover` default styles, otherwise the dropdown appears in the middle of the screen...
       right: "auto",
-      bottom: "auto"
+      bottom: "auto",
+      width,
+      maxHeight: height
     });
   };
-  let lastX, lastY;
-  let observer = new MutationObserver(() => position(lastX, lastY));
+  let lastX, lastY, lastWidth, lastHeight;
+  let observer = new MutationObserver(() => update(lastX, lastY, lastWidth, lastHeight));
   return [
     (x, y) => {
       lastX = x;
       lastY = y;
+      lastWidth = target.style.width;
+      lastHeight = target.style.maxHeight;
       observer.disconnect();
-      position(lastX, lastY);
+      update(lastX, lastY, lastWidth, lastHeight);
       observer.observe(target, { attributeFilter: ["style"] });
     },
     () => {
@@ -5227,9 +5204,19 @@ function filterResultsByInput(list, input, filterable) {
   on(input, "input", (e) => {
     filterable.filter(e.target.value);
   });
+  let original = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value");
+  Object.defineProperty(input, "value", {
+    get() {
+      return original.get.call(this);
+    },
+    set(value3) {
+      original.set.call(this, value3);
+      filterable.filter(value3);
+    }
+  });
   let observer = new MutationObserver(() => {
     requestAnimationFrame(() => {
-      filterable.filter(input.value);
+      filterable.filter(filterable.lastSearch);
     });
   });
   observer.observe(list, { childList: true });
@@ -5377,7 +5364,7 @@ function handleAutocomplete(autocomplete, isStrict, root, input, selectable, pop
     popoverable.onChange(() => {
       if (!popoverable.getState()) {
         requestAnimationFrame(() => {
-          setInputValue(input.getAttribute("data-selected"));
+          setInputValue(input.getAttribute("data-selected") || "");
         });
       }
     });
@@ -7385,10 +7372,10 @@ var UICheckboxGroup = class _UICheckboxGroup extends UIControl {
       }
     }));
     let setCheckAllIndeterminate = () => {
-      if (this._selectable.allAreSelected()) {
+      if (this.allAreSelected()) {
         checkAll.indeterminate = false;
         checkAll._selectable.select();
-      } else if (this._selectable.noneAreSelected()) {
+      } else if (this.noneAreSelected()) {
         checkAll.indeterminate = false;
         checkAll._selectable.deselect();
       } else {
@@ -7401,15 +7388,23 @@ var UICheckboxGroup = class _UICheckboxGroup extends UIControl {
     setCheckAllIndeterminate();
   }
   selectAll() {
-    this.walker().filter((el) => !el.use(Selectable).isSelected()).map((el) => el.use(Selectable).select());
+    this.walker({ checkable: true }).filter((el) => !el.use(Selectable).isSelected()).map((el) => el.use(Selectable).select());
   }
   deselectAll() {
-    this.walker().filter((el) => el.use(Selectable).isSelected()).map((el) => el.use(Selectable).deselect());
+    this.walker({ checkable: true }).filter((el) => el.use(Selectable).isSelected()).map((el) => el.use(Selectable).deselect());
   }
-  walker() {
+  allAreSelected() {
+    let selectableElements = this.walker({ checkable: true }).filter((el) => true);
+    return selectableElements.length > 0 && this.walker({ checkable: true }).filter((el) => el.use(Selectable).isSelected()).length === selectableElements.length;
+  }
+  noneAreSelected() {
+    return this.walker({ checkable: true }).filter((el) => el.use(Selectable).isSelected()).length === 0;
+  }
+  walker({ checkable } = {}) {
     return walker(this, (el, { skip, reject }) => {
       if (el instanceof _UICheckboxGroup) return reject();
       if (!(el.localName === "ui-checkbox")) return skip();
+      if (checkable && (el.disabled || el.use(Selectable).ungrouped)) return skip();
     });
   }
 };
@@ -8693,12 +8688,12 @@ var UICalendar = class extends UIElement {
   boot() {
     let elDrivingConfig = this.closest("ui-date-picker") || this;
     this.querySelectorAll("[data-appended]").forEach((el) => el.remove());
-    let [months, onMonthsChange] = responsiveAttributeValue(elDrivingConfig, "months", 1);
+    let [months, onMonthsChange] = responsiveMonthsAttributeValue(this, elDrivingConfig);
     this.observable = new Observable2();
     let locale = elDrivingConfig.hasAttribute("locale") ? elDrivingConfig.getAttribute("locale") : getLocale();
     this.config = {
       mode: elDrivingConfig.getAttribute("mode") === "range" ? CalendarModes.RANGE : elDrivingConfig.hasAttribute("multiple") ? CalendarModes.MULTIPLE : CalendarModes.SINGLE,
-      months: parseInt(months),
+      months,
       min: this.getMinDate(elDrivingConfig),
       max: this.getMaxDate(elDrivingConfig),
       maxRange: elDrivingConfig.hasAttribute("max-range") ? parseInt(elDrivingConfig.getAttribute("max-range")) : null,
@@ -8710,7 +8705,7 @@ var UICalendar = class extends UIElement {
       fixedWeeks: elDrivingConfig.hasAttribute("fixed-weeks") ? 6 : null
     };
     onMonthsChange((months2) => {
-      this.config.months = parseInt(months2);
+      this.config.months = months2;
       this.observable.notify(ObservableTrigger2.VIEW_CHANGE);
     });
     this.selectable = Selectable3.createFromValueStringAttribute(elDrivingConfig.getAttribute("value"), this.config, this.observable);
@@ -9282,6 +9277,15 @@ function dateFromCell2(cell) {
   if (!cell) return null;
   if (!cell.hasAttribute("data-date")) return null;
   return DateValue.fromIsoDateString(cell.getAttribute("data-date"));
+}
+function responsiveMonthsAttributeValue(el, configEl) {
+  let months = parseInt(configEl.getAttribute("sm:months") || configEl.getAttribute("months") || 1);
+  let callback;
+  let media = matchMedia("(min-width: 640px)");
+  let onChange = () => callback?.(media.matches ? months : 1);
+  media.addEventListener("change", onChange);
+  el.onUnmount(() => media.removeEventListener("change", onChange));
+  return [media.matches ? months : 1, (fn) => callback = fn];
 }
 function syncInputStateWithSingleSelectionState(input, subject) {
   preventInputEventsFromBubblingToSelectRoot2(input);
@@ -12766,6 +12770,7 @@ var UIChart = class extends HTMLElement {
           pointGroupEl.setAttribute("data-point-group", "");
           pointGroupEl.setAttribute("data-series", field);
           series.points.forEach((point) => {
+            if (!isFinite(point.y)) return;
             let pointEl = hydrateSvgTemplate(template);
             pointEl.setAttribute("data-point", "");
             pointEl.setAttribute("data-series", field);
@@ -14092,10 +14097,10 @@ var UIOTP = class extends UIControl {
             requestAnimationFrame(() => this.focusPrev(i));
           }
         } else if (e.key === "ArrowRight") {
-          isRTL(this) ? this.focusPrev(i) : this.focusNext(i);
+          this.focusNext(i);
           e.preventDefault();
         } else if (e.key === "ArrowLeft") {
-          isRTL(this) ? this.focusNext(i) : this.focusPrev(i);
+          this.focusPrev(i);
           e.preventDefault();
         }
       });
